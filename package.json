@@ -1,0 +1,58 @@
+{
+  "name": "slopbox",
+  "version": "0.0.0",
+  "description": "Easy tool sandboxing for agents.",
+  "license": "MIT",
+  "repository": "github:spence-s/slopbox",
+  "homepage": "https://github.com/spence-s/slopbox",
+  "bugs": "https://github.com/spence-s/slopbox/issues",
+  "author": "Spencer Snyder <sasnyde2@gmail.com> (https://spencersnyder.io)",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "sideEffects": false,
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "rimraf dist && tsc -p tsconfig.build.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "dev": "node --watch src/index.ts",
+    "lint": "xo",
+    "prepare": "husky",
+    "release": "np",
+    "start": "node dist/src/index.js",
+    "test": "node --test test/**/*.test.ts",
+    "test:coverage": "node --test --experimental-test-coverage test/**/*.test.ts",
+    "test:watch": "node --test --watch test/**/*.test.ts",
+    "update": "ncu -i"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "typescript",
+    "esm",
+    "starter-template",
+    "sandbox",
+    "pi",
+    "srt"
+  ],
+  "devDependencies": {
+    "@commitlint/cli": "^21.2.4",
+    "@commitlint/config-conventional": "^21.2.4",
+    "@types/node": "^24.19.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.0",
+    "np": "^12.1.1",
+    "npm-check-updates": "^23.1.1",
+    "rimraf": "^6.1.4",
+    "typescript": "^6.0.3",
+    "xo": "^5.0.1"
+  }
+}

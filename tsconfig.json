@@ -1,0 +1,48 @@
+/**
+ * Type-checking configuration for a Node.js 24+ library that uses pure ESM
+ * and runs source files through Node's native TypeScript type stripping.
+ * tsconfig.build.json narrows compilation to publishable source files.
+ */
+{
+  "compilerOptions": {
+    /** BUILD OUTPUT */
+    /** Preserve the source directory in dist so package exports remain predictable. */
+    "rootDir": ".",
+    /** Write compiled JavaScript, declarations, and source maps to dist. */
+    "outDir": "dist",
+    /** Generate source maps for debugging the published JavaScript. */
+    "sourceMap": true,
+    /** Generate type declarations for package consumers. */
+    "declaration": true,
+
+    /** MODULES AND RUNTIME */
+    /** Model the stable Node.js module behavior available to the supported runtime. */
+    "module": "node20",
+    /** Emit only JavaScript syntax supported by the minimum Node.js version. */
+    "target": "es2024",
+    /** Expose standard library APIs available in the ES2024 runtime baseline. */
+    "lib": ["es2024"],
+    /** Include Node.js globals and built-in module types explicitly. */
+    "types": ["node"],
+
+    /** TYPE CHECKING */
+    /** Enable TypeScript's complete family of strict type-checking options. */
+    "strict": true,
+    /** Include undefined when an indexed key is not known to exist. */
+    "noUncheckedIndexedAccess": true,
+    /** Distinguish an absent optional property from one explicitly set to undefined. */
+    "exactOptionalPropertyTypes": true,
+    /** Skip checking dependency declaration internals while still checking their use. */
+    "skipLibCheck": true,
+
+    /** NATIVE TYPESCRIPT */
+    /** Preserve imports as written and require type-only imports to be explicit. */
+    "verbatimModuleSyntax": true,
+    /** Reject TypeScript syntax that Node's native type stripper cannot erase. */
+    "erasableSyntaxOnly": true,
+    /** Rewrite relative .ts import extensions to their JavaScript equivalents on build. */
+    "rewriteRelativeImportExtensions": true
+  },
+  /** Never type-check installed dependencies or generated build output as project files. */
+  "exclude": ["node_modules", "dist"]
+}
