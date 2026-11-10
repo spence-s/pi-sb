@@ -1,11 +1,11 @@
 {
-  "name": "slopbox",
+  "name": "pi-sb",
   "version": "0.0.0",
   "description": "Easy tool sandboxing for agents.",
   "license": "MIT",
-  "repository": "github:spence-s/slopbox",
-  "homepage": "https://github.com/spence-s/slopbox",
-  "bugs": "https://github.com/spence-s/slopbox/issues",
+  "repository": "github:spence-s/pi-sb",
+  "homepage": "https://github.com/spence-s/pi-sb",
+  "bugs": "https://github.com/spence-s/pi-sb/issues",
   "author": "Spencer Snyder <sasnyde2@gmail.com> (https://spencersnyder.io)",
   "type": "module",
   "exports": {
@@ -43,10 +43,20 @@
     "pi",
     "srt"
   ],
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "^0.0.81",
+    "@earendil-works/pi-coding-agent": "^1.5.0",
+    "@earendil-works/pi-tui": "^1.5.0",
+    "execa": "^10.2.1",
+    "object-deep-merge": "^2.0.1",
+    "playwright": "^1.65.0",
+    "typebox": "^1.4.6",
+    "zod": "^4.6.7"
+  },
   "devDependencies": {
     "@commitlint/cli": "^21.2.4",
     "@commitlint/config-conventional": "^21.2.4",
-    "@types/node": "^24.19.0",
+    "@types/node": "^26.6.6",
     "husky": "^9.1.7",
     "lint-staged": "^17.6.0",
     "np": "^12.1.1",

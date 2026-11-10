@@ -1,0 +1,632 @@
+import {mkdir, readFile, writeFile} from 'node:fs/promises';
+import {homedir} from 'node:os';
+import {
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
+import process from 'node:process';
+import {
+  type FilesystemPathEntry,
+  type SandboxRuntimeConfig,
+  FilesystemConfigSchema,
+  NetworkConfigSchema,
+} from '@anthropic-ai/sandbox-runtime';
+import {merge} from 'object-deep-merge';
+import {z} from 'zod';
+
+type PartialWithUndefined<T> = T extends ReadonlyArray<infer Item>
+  ? Array<PartialWithUndefined<Item>>
+  : T extends Record<string, unknown>
+    ? {[Key in keyof T]?: PartialWithUndefined<T[Key]> | undefined}
+    : T;
+
+const nonEmptyStringSchema = z.string().min(1);
+const researchScoutModelSchema = z.strictObject({
+  provider: nonEmptyStringSchema,
+  id: nonEmptyStringSchema,
+});
+const environmentVariableNameSchema = z.string().regex(/^[A-Z_a-z]\w*$/v);
+const pathSchema = nonEmptyStringSchema.refine(path => path.startsWith('/'), 'paths must start with /');
+const headerValuesSchema = z.array(z.string()).min(1);
+const headersSchema = z.record(nonEmptyStringSchema, headerValuesSchema).transform(headers => {
+  const normalized: Record<string, string[]> = {};
+  for (const [name, values] of Object.entries(headers)) {
+    normalized[name.toLowerCase()] = values;
+  }
+
+  return normalized;
+});
+const requestAllowRuleSchema = z.strictObject({
+  headers: headersSchema.optional(),
+  methods: z.array(nonEmptyStringSchema).min(1).transform(methods => methods.map(method => method.toUpperCase())).optional(),
+  pathPrefixes: z.array(pathSchema).min(1).optional(),
+  paths: z.array(pathSchema).min(1).optional(),
+}).refine(rule => Object.values(rule).some(value => value !== undefined), 'at least one predicate is required');
+const requestDestinationSchema = z.string().transform((destination, context) => {
+  let url: URL;
+  try {
+    url = new URL(`http://${destination}`);
+  } catch {
+    context.addIssue({code: 'custom', message: 'use an exact host:port'});
+    return z.NEVER;
+  }
+
+  const portSeparator = destination.startsWith('[')
+    ? destination.indexOf(']:') + 1
+    : destination.lastIndexOf(':');
+  const port = Number(destination.slice(portSeparator + 1));
+  if (
+    portSeparator <= 0
+    || url.username.length > 0
+    || url.password.length > 0
+    || url.pathname !== '/'
+    || url.search.length > 0
+    || url.hash.length > 0
+    || url.hostname.includes('*')
+    || !Number.isSafeInteger(port)
+    || port < 1
+    || port > 65_535
+  ) {
+    context.addIssue({code: 'custom', message: 'use an exact host:port'});
+    return z.NEVER;
+  }
+
+  return `${url.hostname.toLowerCase().replace(/\.$/v, '')}:${port}`;
+});
+const requestPolicySchema = z.strictObject({
+  allow: z.array(requestAllowRuleSchema).min(1),
+  destination: requestDestinationSchema,
+}).strict();
+const requestPoliciesSchema = z.array(requestPolicySchema);
+
+export type RequestAllowRule = z.infer<typeof requestAllowRuleSchema>;
+export type RequestPolicy = z.infer<typeof requestPolicySchema>;
+export type ResearchScoutModel = z.infer<typeof researchScoutModelSchema>;
+
+export type Config = PartialWithUndefined<SandboxRuntimeConfig> & {
+  projects?: Record<string, Config> | undefined;
+  sandbox?: {
+    exposeEnv?: string[] | undefined;
+    promptOnNetworkDeny?: boolean | undefined;
+    requestPolicies?: RequestPolicy[] | undefined;
+    researchAgentsEnabled?: boolean | undefined;
+    researchScoutModel?: z.infer<typeof researchScoutModelSchema> | undefined;
+  } | undefined;
+  [key: string]: unknown;
+};
+export type ConfigScope = 'global' | 'project';
+export type FilesystemPermission = 'allowRead' | 'allowWrite' | 'denyRead' | 'denyWrite';
+export type ListAction = 'add' | 'remove';
+export type NetworkPermission = 'allow' | 'deny';
+export type NetworkDestinationSetting = {
+  destination: string;
+  permission: NetworkPermission;
+  policy?: RequestPolicy;
+  previousDestination?: string;
+};
+
+/**
+ * Returns the path represented by either supported SRT filesystem entry form.
+ * Literal markers must remain intact in stored/runtime configuration, while comparisons and display operate on their path.
+ * Partially typed persisted configuration is rejected rather than accidentally treating an invalid entry as the project root.
+ */
+export const filesystemPath = (entry: PartialWithUndefined<FilesystemPathEntry>): string => {
+  if (typeof entry === 'string') {
+    return entry;
+  }
+
+  if (entry.path === undefined) {
+    throw new Error('Invalid SRT filesystem path entry.');
+  }
+
+  return entry.path;
+};
+
+export class ConfigStore {
+  config: Config = {};
+  hasLoaded = false;
+  cwd: string;
+  path: string;
+
+  /**
+  * Creates a store for the current project's Sandbox configuration.
+  */
+  constructor(cwd: string, path?: string) {
+    this.cwd = cwd;
+    this.path = path ?? resolve(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent'), '..', 'sandbox.json');
+  }
+
+  /**
+  * Reloads the configuration file, treating a missing file as an empty configuration.
+  */
+  async reload(): Promise<Config> {
+    try {
+      const parsedConfig = JSON.parse(await readFile(this.path, 'utf8')) as unknown;
+      if (typeof parsedConfig !== 'object' || parsedConfig === null || Array.isArray(parsedConfig)) {
+        throw new Error(`${this.path} must contain a JSON object.`);
+      }
+
+      this.config = {...parsedConfig};
+    } catch (error) {
+      const errorCode = error instanceof Error && 'code' in error ? error.code : undefined;
+      if (errorCode !== 'ENOENT') {
+        throw error;
+      }
+
+      this.config = {};
+    }
+
+    this.hasLoaded = true;
+    return this.config;
+  }
+
+  /**
+  * Returns the cached configuration, loading it on first use.
+  */
+  async load(): Promise<Config> {
+    return this.hasLoaded ? this.config : this.reload();
+  }
+
+  /**
+   * Returns mutable configuration for one scope, creating the project entry and
+   * migrating its legacy directory list when no current project entry exists.
+   */
+  getOrCreateScopedConfig(scope: ConfigScope): Config {
+    if (scope === 'global') {
+      return this.config;
+    }
+
+    const projectConfigs = this.config.projects ?? {};
+    this.config.projects = projectConfigs;
+
+    const existingProjectConfig = projectConfigs[this.cwd];
+    if (existingProjectConfig !== undefined) {
+      return existingProjectConfig;
+    }
+
+    const legacyDirectories = this.config[this.cwd];
+    const directories = Array.isArray(legacyDirectories)
+      && legacyDirectories.every(entry => typeof entry === 'string')
+      ? legacyDirectories
+      : [];
+    const projectConfig = directories.length > 0
+      ? {filesystem: {allowRead: directories, allowWrite: directories}}
+      : {};
+    projectConfigs[this.cwd] = projectConfig;
+    return projectConfig;
+  }
+
+  /**
+  * Merges global SRT settings with the current project's overrides.
+  */
+  getEffectiveConfig(): SandboxRuntimeConfig {
+    const {projects: _projects, sandbox: _sandbox, ...globalConfig} = this.config;
+    const {sandbox: _projectSandbox, ...projectConfig} = this.getOrCreateScopedConfig('project');
+    return merge(globalConfig, projectConfig);
+  }
+
+  /**
+  * Stores project descendants relatively while keeping external filesystem rules absolute.
+  */
+  async updateFilesystem(
+    scope: ConfigScope,
+    permission: FilesystemPermission | readonly FilesystemPermission[],
+    action: ListAction,
+    path: string,
+  ): Promise<void> {
+    await this.reload();
+    const scopedConfig = this.getOrCreateScopedConfig(scope);
+    const validation = FilesystemConfigSchema.safeParse({
+      ...scopedConfig.filesystem,
+      allowRead: scopedConfig.filesystem?.allowRead ?? [],
+      allowWrite: scopedConfig.filesystem?.allowWrite ?? [],
+      denyRead: scopedConfig.filesystem?.denyRead ?? [],
+      denyWrite: scopedConfig.filesystem?.denyWrite ?? [],
+    });
+    if (!validation.success) {
+      throw new Error(`Invalid SRT filesystem configuration: ${validation.error.message}`);
+    }
+
+    const filesystem = validation.data;
+    const absolutePath = resolve(this.cwd, path);
+    const projectRelativePath = relative(this.cwd, absolutePath);
+    const storedPath = projectRelativePath !== ''
+      && projectRelativePath !== '..'
+      && !projectRelativePath.startsWith(`..${sep}`)
+      && !isAbsolute(projectRelativePath)
+      ? projectRelativePath
+      : absolutePath;
+    const permissions = typeof permission === 'string' ? [permission] : permission;
+    for (const key of permissions) {
+      const entries = filesystem[key] ?? [];
+      filesystem[key] = action === 'add'
+        ? [...new Set([...entries, storedPath])]
+        : entries.filter(entry => resolve(this.cwd, filesystemPath(entry)) !== absolutePath);
+    }
+
+    scopedConfig.filesystem = filesystem;
+    await this.save();
+  }
+
+  /**
+   * Stores whether one scope may connect to and listen on local macOS ports.
+   */
+  async setAllowLocalBinding(scope: ConfigScope, isEnabled: boolean): Promise<void> {
+    await this.reload();
+    const scopedConfig = this.getOrCreateScopedConfig(scope);
+    const validation = NetworkConfigSchema.safeParse({
+      ...scopedConfig.network,
+      allowedDomains: scopedConfig.network?.allowedDomains ?? [],
+      deniedDomains: scopedConfig.network?.deniedDomains ?? [],
+      allowLocalBinding: isEnabled,
+    });
+    if (!validation.success) {
+      throw new Error(`Invalid SRT network configuration: ${validation.error.message}`);
+    }
+
+    scopedConfig.network = validation.data;
+    await this.save();
+  }
+
+  /**
+  * Adds or removes one network rule in the selected scope.
+  */
+  // eslint-disable-next-line max-params -- The optional denial reason belongs to this one atomic scoped-list update.
+  async updateDomain(
+    scope: ConfigScope,
+    permission: NetworkPermission,
+    action: ListAction,
+    domain: string,
+    reason?: string,
+  ): Promise<void> {
+    const key = permission === 'allow' ? 'allowedDomains' : 'deniedDomains';
+    const domainValidation = NetworkConfigSchema.safeParse({
+      allowedDomains: permission === 'allow' ? [domain] : [],
+      deniedDomains: permission === 'deny' ? [domain] : [],
+    });
+    if (!domainValidation.success) {
+      throw new Error(`Invalid SRT domain pattern: ${domain}`);
+    }
+
+    await this.reload();
+    const scopedConfig = this.getOrCreateScopedConfig(scope);
+    const validation = NetworkConfigSchema.safeParse({
+      ...scopedConfig.network,
+      allowedDomains: scopedConfig.network?.allowedDomains ?? [],
+      deniedDomains: scopedConfig.network?.deniedDomains ?? [],
+    });
+    if (!validation.success) {
+      throw new Error(`Invalid SRT network configuration: ${validation.error.message}`);
+    }
+
+    const network = validation.data;
+    network[key] = action === 'add'
+      ? [...new Set([...network[key], domain])]
+      : network[key].filter(entry => entry !== domain);
+    if (permission === 'deny') {
+      const reasons = network.deniedDomainReasons ?? {};
+      if (action === 'add' && reason !== undefined) {
+        reasons[domain] = reason;
+      } else if (action === 'remove') {
+        const {[domain]: _removed, ...remainingReasons} = reasons;
+        network.deniedDomainReasons = remainingReasons;
+      }
+
+      network.deniedDomainReasons ??= reasons;
+    }
+
+    scopedConfig.network = network;
+    await this.save();
+  }
+
+  /**
+  * Returns only settings explicitly stored in a scope, excluding Sloppi metadata.
+  */
+  getScopedSrtConfig(scope: ConfigScope): Config {
+    const scopedConfig = this.getOrCreateScopedConfig(scope);
+    const {projects: _projects, sandbox: _sandbox, ...srtConfig} = scopedConfig;
+    return srtConfig;
+  }
+
+  /**
+  * Removes all settings stored in one scope.
+  */
+  async resetScope(scope: ConfigScope): Promise<void> {
+    await this.reload();
+    if (scope === 'global') {
+      this.config = this.config.projects === undefined
+        ? {}
+        : {projects: this.config.projects};
+    } else if (this.config.projects !== undefined) {
+      const {[this.cwd]: _project, ...remainingProjects} = this.config.projects;
+      this.config.projects = remainingProjects;
+    }
+
+    await this.save();
+  }
+
+  /**
+  * Persists the current configuration without legacy project entries.
+  */
+  async save(): Promise<void> {
+    const {[this.cwd]: _legacy, ...updatedConfig} = this.config;
+    this.config = updatedConfig;
+    await mkdir(dirname(this.path), {recursive: true});
+    await writeFile(this.path, `${JSON.stringify(this.config, undefined, 2)}\n`);
+  }
+
+  /**
+  * Returns the research-agent setting stored directly in one scope.
+  */
+  getResearchAgentsSetting(scope: ConfigScope): boolean | undefined {
+    return z.boolean().optional().parse(this.getOrCreateScopedConfig(scope).sandbox?.researchAgentsEnabled);
+  }
+
+  /**
+  * Returns the project override, global default, or disabled fallback.
+  */
+  areResearchAgentsEnabled(): boolean {
+    return this.getResearchAgentsSetting('project') ?? this.getResearchAgentsSetting('global') ?? false;
+  }
+
+  /**
+  * Persists or clears research-agent delegation in one scope.
+  */
+  async setResearchAgentsEnabled(scope: ConfigScope, isEnabled: boolean | undefined): Promise<void> {
+    await this.reload();
+    const scopedConfig = this.getOrCreateScopedConfig(scope);
+    const sandboxConfig = scopedConfig.sandbox ?? {};
+    if (isEnabled === undefined) {
+      delete sandboxConfig.researchAgentsEnabled;
+    } else {
+      sandboxConfig.researchAgentsEnabled = isEnabled;
+    }
+
+    scopedConfig.sandbox = sandboxConfig;
+    await this.save();
+  }
+
+  /**
+   * Returns the Research Scout model stored directly in one scope so settings
+   * screens can distinguish an editable value from an inherited value.
+   */
+  getResearchScoutModelSetting(scope: ConfigScope): ResearchScoutModel | undefined {
+    return researchScoutModelSchema.optional().parse(this.getOrCreateScopedConfig(scope).sandbox?.researchScoutModel);
+  }
+
+  /**
+   * Resolves the model used by profiles without their own model. Project
+   * configuration wins over the global default, matching the other scoped settings.
+   */
+  getResearchScoutModel(): ResearchScoutModel | undefined {
+    return this.getResearchScoutModelSetting('project') ?? this.getResearchScoutModelSetting('global');
+  }
+
+  /**
+   * Persists or clears the fallback Research Scout model in one scope while
+   * preserving unrelated sandbox metadata in that scope.
+   */
+  async setResearchScoutModel(scope: ConfigScope, model: ResearchScoutModel | undefined): Promise<void> {
+    await this.reload();
+    const scopedConfig = this.getOrCreateScopedConfig(scope);
+    const sandboxConfig = scopedConfig.sandbox ?? {};
+    if (model === undefined) {
+      delete sandboxConfig.researchScoutModel;
+    } else {
+      sandboxConfig.researchScoutModel = researchScoutModelSchema.parse(model);
+    }
+
+    scopedConfig.sandbox = sandboxConfig;
+    await this.save();
+  }
+
+  /**
+  * Sets whether blocked network requests prompt for access in the selected scope.
+  */
+  async setPrompting(scope: ConfigScope, isEnabled: boolean): Promise<void> {
+    await this.reload();
+    const scopedConfig = this.getOrCreateScopedConfig(scope);
+    const sandboxConfig = scopedConfig.sandbox ?? {};
+    sandboxConfig.promptOnNetworkDeny = isEnabled;
+    scopedConfig.sandbox = sandboxConfig;
+    await this.save();
+  }
+
+  /**
+   * Validates and combines declarative request policies from both configuration scopes.
+   */
+  getRequestPolicies(): RequestPolicy[] {
+    const projectConfig = this.getOrCreateScopedConfig('project');
+    return [
+      ...requestPoliciesSchema.parse(this.config.sandbox?.requestPolicies ?? []),
+      ...requestPoliciesSchema.parse(projectConfig.sandbox?.requestPolicies ?? []),
+    ];
+  }
+
+  /**
+   * Validates the combined destination form before the TUI is allowed to close.
+   */
+  validateNetworkDestination(setting: NetworkDestinationSetting): void {
+    const policy = setting.policy === undefined ? undefined : requestPolicySchema.parse(setting.policy);
+    if (policy !== undefined && policy.destination !== setting.destination) {
+      throw new Error('A request policy must match its network destination.');
+    }
+
+    const validation = NetworkConfigSchema.safeParse({
+      allowedDomains: setting.permission === 'allow' ? [setting.destination] : [],
+      deniedDomains: setting.permission === 'deny' ? [setting.destination] : [],
+    });
+    if (!validation.success) {
+      throw new Error(`Invalid network destination: ${setting.destination}`);
+    }
+  }
+
+  /**
+   * Replaces one destination's connection rule and optional request policy atomically.
+   */
+  async setNetworkDestination(scope: ConfigScope, setting: NetworkDestinationSetting): Promise<void> {
+    this.validateNetworkDestination(setting);
+    const {policy} = setting;
+    await this.reload();
+    const scopedConfig = this.getOrCreateScopedConfig(scope);
+    const networkValidation = NetworkConfigSchema.safeParse({
+      ...scopedConfig.network,
+      allowedDomains: scopedConfig.network?.allowedDomains ?? [],
+      deniedDomains: scopedConfig.network?.deniedDomains ?? [],
+    });
+    if (!networkValidation.success) {
+      throw new Error(`Invalid SRT network configuration: ${networkValidation.error.message}`);
+    }
+
+    const previousDestination = setting.previousDestination ?? setting.destination;
+    const network = networkValidation.data;
+    network.allowedDomains = network.allowedDomains.filter(entry => ![previousDestination, setting.destination].includes(entry));
+    network.deniedDomains = network.deniedDomains.filter(entry => ![previousDestination, setting.destination].includes(entry));
+    network[setting.permission === 'allow' ? 'allowedDomains' : 'deniedDomains'].push(setting.destination);
+    network.deniedDomainReasons = Object.fromEntries(Object.entries(network.deniedDomainReasons ?? {})
+      .filter(([domain]) => ![previousDestination, setting.destination].includes(domain)));
+    const sandboxConfig = scopedConfig.sandbox ?? {};
+    const policies = requestPoliciesSchema.parse(sandboxConfig.requestPolicies ?? [])
+      .filter(entry => ![previousDestination, setting.destination].includes(entry.destination));
+    sandboxConfig.requestPolicies = policy !== undefined && setting.permission === 'allow'
+      ? [...policies, policy]
+      : policies;
+    scopedConfig.network = network;
+    scopedConfig.sandbox = sandboxConfig;
+    await this.save();
+  }
+
+  /**
+   * Removes one destination and all of its request policies from a scope.
+   */
+  async removeNetworkDestination(scope: ConfigScope, destination: string): Promise<void> {
+    await this.reload();
+    const scopedConfig = this.getOrCreateScopedConfig(scope);
+    const networkValidation = NetworkConfigSchema.safeParse({
+      ...scopedConfig.network,
+      allowedDomains: scopedConfig.network?.allowedDomains ?? [],
+      deniedDomains: scopedConfig.network?.deniedDomains ?? [],
+    });
+    if (!networkValidation.success) {
+      throw new Error(`Invalid SRT network configuration: ${networkValidation.error.message}`);
+    }
+
+    const network = networkValidation.data;
+    network.allowedDomains = network.allowedDomains.filter(entry => entry !== destination);
+    network.deniedDomains = network.deniedDomains.filter(entry => entry !== destination);
+    network.deniedDomainReasons = Object.fromEntries(Object.entries(network.deniedDomainReasons ?? {})
+      .filter(([domain]) => domain !== destination));
+    const sandboxConfig = scopedConfig.sandbox ?? {};
+    sandboxConfig.requestPolicies = requestPoliciesSchema.parse(sandboxConfig.requestPolicies ?? [])
+      .filter(policy => policy.destination !== destination);
+    scopedConfig.network = network;
+    scopedConfig.sandbox = sandboxConfig;
+    await this.save();
+  }
+
+  /**
+   * Returns validated request policies stored directly in one configuration scope.
+   */
+  getScopedRequestPolicies(scope: ConfigScope): RequestPolicy[] {
+    return requestPoliciesSchema.parse(this.getOrCreateScopedConfig(scope).sandbox?.requestPolicies ?? []);
+  }
+
+  /**
+   * Validates one request policy for interactive editors before they persist it.
+   */
+  validateRequestPolicy(policy: unknown): RequestPolicy {
+    return requestPolicySchema.parse(policy);
+  }
+
+  /**
+   * Returns validated host environment variable names stored directly in one
+   * scope, without folding inherited names into the editable list.
+   */
+  getScopedExposedEnv(scope: ConfigScope): string[] {
+    const names = this.getOrCreateScopedConfig(scope).sandbox?.exposeEnv ?? [];
+    const invalidName = names.find(name => !environmentVariableNameSchema.safeParse(name).success);
+    if (invalidName !== undefined) {
+      throw new Error(`Invalid sandbox.exposeEnv variable name: ${invalidName}`);
+    }
+
+    return [...new Set(names)];
+  }
+
+  /**
+   * Returns the effective exposed-variable names. Global and project lists combine
+   * because environment exposure is additive rather than an overriding scalar.
+   */
+  getExposedEnv(): string[] {
+    return [...new Set([
+      ...this.getScopedExposedEnv('global'),
+      ...this.getScopedExposedEnv('project'),
+    ])];
+  }
+
+  /**
+   * Adds or removes one validated environment-variable name in the selected
+   * scope, leaving exposure owned by the other scope untouched.
+   */
+  async updateExposedEnv(scope: ConfigScope, action: ListAction, name: string): Promise<void> {
+    const parsedName = environmentVariableNameSchema.safeParse(name);
+    if (!parsedName.success) {
+      throw new Error(`Invalid sandbox.exposeEnv variable name: ${name}`);
+    }
+
+    await this.reload();
+    const scopedConfig = this.getOrCreateScopedConfig(scope);
+    const sandboxConfig = scopedConfig.sandbox ?? {};
+    const names = this.getScopedExposedEnv(scope);
+    sandboxConfig.exposeEnv = action === 'add'
+      ? [...new Set([...names, parsedName.data])]
+      : names.filter(entry => entry !== parsedName.data);
+    scopedConfig.sandbox = sandboxConfig;
+    await this.save();
+  }
+
+  /**
+  * Returns the current project's prompt setting, falling back to global and then true.
+  */
+  shouldPrompt(): boolean {
+    const globalPromptSetting = this.config.sandbox?.promptOnNetworkDeny;
+    const projectConfig = this.getOrCreateScopedConfig('project');
+    const projectPromptSetting = projectConfig.sandbox?.promptOnNetworkDeny;
+    return typeof projectPromptSetting === 'boolean'
+      ? projectPromptSetting
+      : (typeof globalPromptSetting === 'boolean' ? globalPromptSetting : true);
+  }
+
+  /**
+  * Checks whether an SRT domain pattern allows a host and optional port.
+  */
+  isDomainAllowed(domain: string): boolean {
+    const separator = domain.lastIndexOf(':');
+    const host = separator === -1 ? domain : domain.slice(0, separator);
+    const port = separator === -1 ? undefined : Number(domain.slice(separator + 1));
+    if (port !== undefined && (!Number.isSafeInteger(port) || port < 1 || port > 65_535)) {
+      return false;
+    }
+
+    const effectiveConfig = this.getEffectiveConfig();
+    const networkConfigValidation = NetworkConfigSchema.safeParse({
+      ...effectiveConfig.network,
+      allowedDomains: effectiveConfig.network?.allowedDomains ?? [],
+      deniedDomains: effectiveConfig.network?.deniedDomains ?? [],
+    });
+    if (!networkConfigValidation.success) {
+      return false;
+    }
+
+    return networkConfigValidation.data.allowedDomains.some(pattern => {
+      const patternSeparator = pattern.lastIndexOf(':');
+      const patternHost = patternSeparator === -1 ? pattern : pattern.slice(0, patternSeparator);
+      const patternPort = patternSeparator === -1 ? undefined : Number(pattern.slice(patternSeparator + 1));
+      return (patternPort === undefined || patternPort === port)
+        && (patternHost === host || (patternHost.startsWith('*.') && host.endsWith(`.${patternHost.slice(2)}`)));
+    });
+  }
+}

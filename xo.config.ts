@@ -37,6 +37,12 @@ const xoConfig: XoConfigItem[] = [
       ],
     },
   },
+  {
+    files: ['test/**/*.ts', 'packages/*/test/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-unsafe-type-assertion': 'off',
+    },
+  },
 ];
 
 export default xoConfig;

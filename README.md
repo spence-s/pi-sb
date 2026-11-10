@@ -1,9 +1,9 @@
-# slopbox
+# pi-sb
 
-[![Node.js CI](https://github.com/spence-s/slopbox/actions/workflows/node.js.yml/badge.svg?branch=main&event=push)](https://github.com/spence-s/slopbox/actions/workflows/node.js.yml)
+[![Node.js CI](https://github.com/spence-s/pi-sb/actions/workflows/node.js.yml/badge.svg?branch=main&event=push)](https://github.com/spence-s/pi-sb/actions/workflows/node.js.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
-[![npm version](https://img.shields.io/npm/v/slopbox.svg)](https://www.npmjs.com/package/slopbox)
+[![npm version](https://img.shields.io/npm/v/pi-sb.svg)](https://www.npmjs.com/package/pi-sb)
 
 An opinionated starter template for publishing TypeScript and pure ESM Node.js libraries to npm.
 

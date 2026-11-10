@@ -17,11 +17,11 @@
 
     /** MODULES AND RUNTIME */
     /** Model the stable Node.js module behavior available to the supported runtime. */
-    "module": "node20",
+    "module": "nodenext",
     /** Emit only JavaScript syntax supported by the minimum Node.js version. */
-    "target": "es2024",
+    "target": "es2025",
     /** Expose standard library APIs available in the ES2024 runtime baseline. */
-    "lib": ["es2024"],
+    "lib": ["ES2025", "ESNext.Collection"],
     /** Include Node.js globals and built-in module types explicitly. */
     "types": ["node"],
 
@@ -41,8 +41,8 @@
     /** Reject TypeScript syntax that Node's native type stripper cannot erase. */
     "erasableSyntaxOnly": true,
     /** Rewrite relative .ts import extensions to their JavaScript equivalents on build. */
-    "rewriteRelativeImportExtensions": true
+    "rewriteRelativeImportExtensions": true,
   },
   /** Never type-check installed dependencies or generated build output as project files. */
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist"],
 }
