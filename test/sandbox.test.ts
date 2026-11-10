@@ -44,6 +44,20 @@ import {SandboxSessionManager} from '../src/session-manager.ts';
 import {SandboxSubagent} from '../src/subagent.ts';
 import {SandboxTools} from '../src/tools.ts';
 
+/**
+ * Captures runtime policy without opening proxy listeners in configuration tests.
+ */
+function mockRuntimeConfig(t: TestContext) {
+  let config: ReturnType<typeof SandboxManager.getConfig>;
+  t.mock.method(SandboxManager, 'initialize', async (runtimeConfig: Parameters<typeof SandboxManager.initialize>[0]) => {
+    config = runtimeConfig;
+  });
+  t.mock.method(SandboxManager, 'getConfig', () => config);
+  t.mock.method(SandboxManager, 'reset', async () => {
+    config = undefined;
+  });
+}
+
 void test('uses no persisted sandbox access by default', (t: TestContext) => {
   const configStore = new ConfigStore('/Users/spencer/Projects/app');
   configStore.hasLoaded = true;
@@ -311,7 +325,7 @@ void test('lists 500 entries with one sandbox wrapper', async (t: TestContext) =
     await Promise.all(Array.from({length: 260}, async (_, index) =>
       writeFile(join(byteDirectory, `${String(index).padStart(3, '0')}-${'x'.repeat(196)}`), '')));
     const byteResult = await tools.ls.execute('ls-byte-test', {path: byteDirectory, limit: 500});
-    const byteDetails = byteResult.details;
+    const byteDetails = byteResult.details as LsToolDetails | undefined;
     t.assert.strictEqual(wrapperCount, 2);
     t.assert.strictEqual(byteDetails?.entryLimitReached, undefined);
     t.assert.strictEqual(byteDetails?.truncation?.truncatedBy, 'bytes');
@@ -500,13 +514,17 @@ void test('prepares Playwright on its first sandboxed CLI command', async (t: Te
     return 'ws://127.0.0.1:4321/session';
   });
   bridge.register({
+    /**
+     * Captures only the event hooks exercised by this test.
+     */
     on(name: string, handler: (...arguments_: unknown[]) => unknown) {
       handlers.set(name, handler);
+      return () => undefined;
     },
     registerCommand() {
       return undefined;
     },
-  });
+  } as unknown as ExtensionAPI);
 
   const handler = handlers.get('tool_call');
   if (handler === undefined) {
@@ -570,12 +588,11 @@ void test('cleans up after sandbox configuration errors', async (t: TestContext)
 });
 
 /**
- * Verifies private filesystem and Unix socket access without leaking TMPDIR into
- * host children. The host child inheritance check always runs, but executing a
- * second macOS sandbox profile is unavailable inside the tool sandbox, so only
- * the sandboxed child-environment assertion requires running this suite on the host.
+ * Checks filesystem and socket policy plus child environments without opening
+ * runtime proxy listeners or applying a nested macOS sandbox profile.
  */
 void test('isolates reads and temporary Unix sockets', async (t: TestContext) => {
+  mockRuntimeConfig(t);
   const directory = realpathSync(process.cwd());
   const configStore = new ConfigStore(directory);
   configStore.hasLoaded = true;
@@ -604,13 +621,9 @@ void test('isolates reads and temporary Unix sockets', async (t: TestContext) =>
     ]);
     // JSON preserves an absent final value that Execa would otherwise conflate with a trimmed newline.
     t.assert.strictEqual(host.stdout, JSON.stringify([previousTmpdir, previousClaudeCodeTmpdir]));
-    let sandboxEnvironment = `1\n${scratchPath}\n${scratchPath}`;
-    if (process.env.USER !== 'sandbox') {
-      const result = await sandbox.run`printf '%s\n%s\n%s' "$NODE_USE_ENV_PROXY" "$TMPDIR" "$CLAUDE_CODE_TMPDIR"`;
-      sandboxEnvironment = result.stdout;
-    }
-
-    t.assert.strictEqual(sandboxEnvironment, `1\n${scratchPath}\n${scratchPath}`);
+    t.mock.method(SandboxManager, 'wrapWithSandbox', async (command: string) => command);
+    const result = await sandbox.run`printf '%s\n%s\n%s' "$NODE_USE_ENV_PROXY" "$TMPDIR" "$CLAUDE_CODE_TMPDIR"`;
+    t.assert.strictEqual(result.stdout, `1\n${scratchPath}\n${scratchPath}`);
   } finally {
     await sandbox.stopSession();
   }
@@ -623,6 +636,7 @@ void test('isolates reads and temporary Unix sockets', async (t: TestContext) =>
  * Verifies configuration cannot hide the project or expose the whole home folder.
  */
 void test('keeps built-in project and home access fixed', async (t: TestContext) => {
+  mockRuntimeConfig(t);
   const directory = realpathSync(process.cwd());
   const home = homedir();
   const {root} = parse(directory);
@@ -641,16 +655,17 @@ void test('keeps built-in project and home access fixed', async (t: TestContext)
   try {
     await sandbox.startSession();
     const {filesystem} = SandboxManager.getConfig() ?? {};
-    t.assert.ok(filesystem?.allowRead?.includes(directory));
-    t.assert.ok(filesystem?.allowWrite?.includes(directory));
-    t.assert.ok(filesystem?.denyRead?.includes(home));
-    t.assert.ok(!filesystem?.denyRead?.includes(root));
-    t.assert.ok(!filesystem?.denyRead?.includes(directory));
-    t.assert.ok(!filesystem?.denyWrite?.includes(root));
-    t.assert.ok(!filesystem?.denyWrite?.includes(directory));
-    t.assert.ok(!filesystem?.allowWrite?.includes(root));
-    t.assert.ok(!filesystem?.allowRead?.includes(home));
-    t.assert.ok(!filesystem?.allowWrite?.includes(home));
+    t.assert.ok(filesystem);
+    t.assert.ok(filesystem.allowRead?.includes(directory));
+    t.assert.ok(filesystem.allowWrite?.includes(directory));
+    t.assert.ok(filesystem.denyRead?.includes(home));
+    t.assert.ok(!filesystem.denyRead?.includes(root));
+    t.assert.ok(!filesystem.denyRead?.includes(directory));
+    t.assert.ok(!filesystem.denyWrite?.includes(root));
+    t.assert.ok(!filesystem.denyWrite?.includes(directory));
+    t.assert.ok(!filesystem.allowWrite?.includes(root));
+    t.assert.ok(!filesystem.allowRead?.includes(home));
+    t.assert.ok(!filesystem.allowWrite?.includes(home));
   } finally {
     await sandbox.stopSession();
   }
@@ -681,7 +696,11 @@ void test('uses the host home when HOME is explicitly exposed', async (t: TestCo
   }
 });
 
+/**
+ * Preserves skill access through symlinks without exposing other home paths.
+ */
 void test('allows only logical and canonical global skill directories', async (t: TestContext) => {
+  mockRuntimeConfig(t);
   const directory = await mkdtemp(join(process.cwd(), '.sloppi-skills-test-'));
   const logicalPiAgentPath = join(directory, '.pi-agent');
   const actualPiAgentPath = join(directory, 'actual-pi-agent');
@@ -909,7 +928,11 @@ void test('combines and validates configured host environment variable names', (
   t.assert.throws(() => configStore.getExposedEnv(), /Invalid sandbox\.exposeEnv/v);
 });
 
+/**
+ * Exercises request policies without starting the runtime's network proxies.
+ */
 void test('filters configured destinations by method, path, and header', async (t: TestContext) => {
+  mockRuntimeConfig(t);
   const directory = realpathSync(process.cwd());
   const configStore = new ConfigStore(directory);
   configStore.config = {
@@ -1298,7 +1321,7 @@ void test('/sandbox scopes its Vim navigation bindings to the open menu', async 
     registerCommand(_name: string, options: {handler: Handler}) {
       handler = options.handler;
     },
-  });
+  } as unknown as ExtensionAPI);
 
   const ctx = {
     ui: {
@@ -1347,7 +1370,7 @@ void test('/sandbox toggles host execution and updates its status', async (t: Te
     registerCommand(_name: string, options: {handler: Handler}) {
       handler = options.handler;
     },
-  });
+  } as unknown as ExtensionAPI);
   if (handler === undefined) {
     throw new Error('/sandbox handler was not registered');
   }
@@ -1392,7 +1415,7 @@ void test('/sandbox shows Advanced in local and global scopes', async (t: TestCo
     registerCommand(_name: string, options: {handler: Handler}) {
       handler = options.handler;
     },
-  });
+  } as unknown as ExtensionAPI);
 
   const ctx = {
     ui: {
@@ -1430,7 +1453,7 @@ void test('registers the read-only research scout', (t: TestContext) => {
     registerTool(tool: {name: string; label: string}) {
       tools.push({name: tool.name, label: tool.label});
     },
-  }, '/project', {} as SandboxSessionManager, new ConfigStore('/project'));
+  } as unknown as ExtensionAPI, '/project', {} as SandboxSessionManager, new ConfigStore('/project'));
 
   subagent.register();
 
@@ -1446,7 +1469,7 @@ void test('renders a stable live research dashboard and legacy results', (t: Tes
     registerTool(tool: ToolDefinition) {
       registered = tool;
     },
-  }, '/project', {} as SandboxSessionManager, new ConfigStore('/project'));
+  } as unknown as ExtensionAPI, '/project', {} as SandboxSessionManager, new ConfigStore('/project'));
 
   subagent.register();
   initTheme(undefined, false);
@@ -1536,12 +1559,18 @@ void test('renders a stable live research dashboard and legacy results', (t: Tes
   t.assert.match(legacy, /legacy result/v);
 });
 
+/**
+ * Checks command registration using only the extension services it needs.
+ */
 void test('registers session commands', (t: TestContext) => {
   const commands: string[] = [];
 
   sandboxExtension({
+    /**
+     * Matches Pi's unsubscribe contract without installing event hooks.
+     */
     on() {
-      return undefined;
+      return () => undefined;
     },
     registerCommand(name: string) {
       commands.push(name);
@@ -1549,7 +1578,7 @@ void test('registers session commands', (t: TestContext) => {
     registerTool() {
       return undefined;
     },
-  });
+  } as unknown as ExtensionAPI);
 
   t.assert.deepStrictEqual(commands, ['sandbox', 'playwright']);
 });

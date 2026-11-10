@@ -1,3 +1,4 @@
+/* eslint-disable new-cap -- for typebox */
 import {Buffer} from 'node:buffer';
 import {join} from 'node:path';
 import {

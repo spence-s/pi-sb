@@ -81,6 +81,9 @@ void test('toggles host HOME exposure through its dedicated option', async (t: T
   }
 });
 
+/**
+ * Keeps menu coverage independent of unused extension services.
+ */
 void test('shows the Research Scout model only when research agents are enabled', async (t: TestContext) => {
   const directory = await mkdtemp(join(tmpdir(), 'sloppi-advanced-test-'));
   const config = new ConfigStore('/project', join(directory, 'sandbox.json'));
@@ -99,12 +102,12 @@ void test('shows the Research Scout model only when research agents are enabled'
     await config.setResearchAgentsEnabled('global', true);
     await config.setResearchScoutModel('global', {provider: 'test', id: 'small'});
     await config.setResearchAgentsEnabled('project', false);
-    await advanced.manage({}, ctx, 'project');
+    await advanced.manage({} as ExtensionAPI, ctx, 'project');
     t.assert.ok(menus[0]?.every(option => !option.startsWith('Research Scout model')));
     t.assert.ok(menus[0]?.includes('Share host home directory — Off (Global)'));
 
     await config.setResearchAgentsEnabled('project', undefined);
-    await advanced.manage({}, ctx, 'project');
+    await advanced.manage({} as ExtensionAPI, ctx, 'project');
     t.assert.ok(menus[1]?.includes('Research Scout model — test/small (Global)'));
     t.assert.ok(menus[1]?.includes('Research agents — On (Global)'));
   } finally {
