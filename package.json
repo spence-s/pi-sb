@@ -1,6 +1,6 @@
 {
   "name": "pi-sb",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "A Pi extension that sandboxes shell and filesystem tools with configurable access.",
   "license": "MIT",
   "repository": "github:spence-s/pi-sb",
