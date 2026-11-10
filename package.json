@@ -1,7 +1,7 @@
 {
   "name": "pi-sb",
   "version": "0.0.0",
-  "description": "Easy tool sandboxing for agents.",
+  "description": "A Pi extension that sandboxes shell and filesystem tools with configurable access.",
   "license": "MIT",
   "repository": "github:spence-s/pi-sb",
   "homepage": "https://github.com/spence-s/pi-sb",
@@ -24,45 +24,56 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "dev": "node --watch src/index.ts",
     "lint": "xo",
-    "prepare": "husky",
+    "prepare": "node --input-type=module -e \"if (process.env.NODE_ENV !== 'production') (await import('husky')).default()\"",
     "release": "np",
     "start": "node dist/src/index.js",
     "test": "node --test test/**/*.test.ts",
     "test:coverage": "node --test --experimental-test-coverage test/**/*.test.ts",
     "test:watch": "node --test --watch test/**/*.test.ts",
-    "update": "ncu -i"
+    "update": "ncu -i",
+    "prepack": "npm run build"
   },
   "files": [
-    "dist"
+    "dist",
+    "src"
   ],
   "keywords": [
-    "typescript",
-    "esm",
-    "starter-template",
+    "pi-package",
+    "pi-extension",
     "sandbox",
     "pi",
     "srt"
   ],
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.82",
-    "@earendil-works/pi-coding-agent": "^1.5.2",
-    "@earendil-works/pi-tui": "^1.5.2",
     "execa": "^10.2.1",
     "object-deep-merge": "^2.0.1",
     "playwright": "^1.65.0",
-    "typebox": "^1.4.6",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@commitlint/cli": "^21.2.4",
     "@commitlint/config-conventional": "^21.2.4",
+    "@earendil-works/pi-coding-agent": "^1.5.2",
+    "@earendil-works/pi-tui": "^1.5.2",
     "@types/node": "^26.6.6",
     "husky": "^9.1.7",
     "lint-staged": "^17.6.0",
     "np": "^12.1.1",
     "npm-check-updates": "^23.1.1",
     "rimraf": "^6.1.4",
+    "typebox": "^1.4.6",
     "typescript": "^6.0.3",
     "xo": "^5.0.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
   }
 }

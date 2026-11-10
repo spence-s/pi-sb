@@ -1,72 +1,46 @@
 # pi-sb
 
-[![Node.js CI](https://github.com/spence-s/pi-sb/actions/workflows/node.js.yml/badge.svg?branch=main&event=push)](https://github.com/spence-s/pi-sb/actions/workflows/node.js.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
-[![Node.js Version](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
-[![npm version](https://img.shields.io/npm/v/pi-sb.svg)](https://www.npmjs.com/package/pi-sb)
+A [Pi](https://pi.dev) extension that runs shell and filesystem tools inside [Anthropic Sandbox Runtime](https://github.com/anthropics/sandbox-runtime).
 
-An opinionated starter template for publishing TypeScript and pure ESM Node.js libraries to npm.
+It replaces Pi's `bash`, `read`, `write`, `edit`, `find`, `grep`, and `ls` tools with sandboxed versions. By default, they can work in the current project and private temporary storage, read global skills, and cannot access the network until you allow a destination.
 
-## Included
+## Install
 
-- Node.js 24 or newer with native TypeScript type stripping and watch mode
-- Strict TypeScript, erasable syntax, declaration files, and source maps
-- Node.js's native test runner and coverage
-- XO linting and formatting
-- GitHub Actions on supported Node.js versions
-- Husky, lint-staged, and Commitlint with Conventional Commits
-- npm-check-updates for dependency updates
-- `np` for npm releases
+Requires Pi and Node.js 24+. On macOS, install `ripgrep`; on Linux, install `bubblewrap`, `socat`, and `ripgrep`.
 
-## Use the template
+From npm (once published):
 
-Create a repository from this GitHub template, clone it, then run:
+```sh
+pi install npm:pi-sb
+```
+
+Or from Git:
+
+```sh
+pi install git:github.com/spence-s/pi-sb
+```
+
+Choose one. Add `--local` to install for the current project only, then restart Pi or run `/reload`.
+
+## Use
+
+Sandbox protection starts automatically. Run `/sandbox` to manage filesystem access, allowed network destinations, and advanced settings for the current project or globally. Blocked network requests can prompt you to approve access.
+
+- `/sandbox status` — check protection.
+- `/sandbox off` or `/sandbox on` — disable or enable it for this session. **When off, managed tools run directly on the host.**
+- `research_scout` — optional read-only research delegation, configurable through `/sandbox`.
+- `/playwright on` — optional Playwright CLI bridge using host Chrome through the sandbox's network proxy; requires Chrome and `playwright-cli` installed separately.
+
+**Scope:** this extension isolates its managed tools, not Pi itself or tools from other extensions. Only load extensions you trust.
+
+## Development
 
 ```sh
 npm install
-npm run check
-npm test
-npm run dev
+npm run check && npm run lint && npm test
+pi -e ./src/index.ts
 ```
-
-Customize these files before publishing:
-
-- Package metadata in `package.json`
-- The author in `LICENSE`
-- `src/index.ts` and `test/index.test.ts`
-- This README
-
-Local TypeScript imports include their `.ts` extension. The compiler rewrites those extensions when building, while Node.js runs the source directly during development and testing.
-
-## Scripts
-
-| Command                 | Purpose                                                            |
-| ----------------------- | ------------------------------------------------------------------ |
-| `npm run build`         | Clean `dist` and compile JavaScript, declarations, and source maps |
-| `npm run check`         | Type-check without emitting files                                  |
-| `npm run dev`           | Run `src/index.ts` in watch mode                                   |
-| `npm run lint`          | Lint the project with XO; append `-- --fix` to apply fixes         |
-| `npm test`              | Run the test suite once                                            |
-| `npm run test:coverage` | Run tests with native coverage reporting                           |
-| `npm run test:watch`    | Run tests in watch mode                                            |
-| `npm run update`        | Interactively update dependencies                                  |
-| `npm run release`       | Publish with `np`                                                  |
-| `npm start`             | Run the compiled entry point                                       |
-
-Before committing, run:
-
-```sh
-npm run check && npm run lint && npm test && npm run build
-```
-
-Git hooks lint staged files and validate commit messages against the [Conventional Commits](https://www.conventionalcommits.org/) format.
-
-## TypeScript
-
-The configuration targets native Node.js TypeScript execution with [`erasableSyntaxOnly`](https://www.typescriptlang.org/tsconfig/#erasableSyntaxOnly). Runtime TypeScript syntax such as enums and namespaces is intentionally unsupported. Published packages are compiled to JavaScript because Node.js does not strip types from dependencies in `node_modules`.
-
-See [Node.js TypeScript support](https://nodejs.org/api/typescript.html) for details.
 
 ## License
 
-MIT © [Spencer Snyder](https://spencersnyder.io)
+[MIT](LICENSE)
