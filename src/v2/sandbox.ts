@@ -9,6 +9,7 @@ import {execa, type Options} from 'execa';
  * Exposes a subset of execa options
  */
 export type RunOptions<T extends Options = Options> = T extends Options ? Pick<T,
+  | 'cwd'
   | 'input'
   | 'stdin'
   | 'stdout'
@@ -93,7 +94,8 @@ export class Sandbox {
    * Options are trusted host code: file-backed stdio and transforms run outside SRT.
    * Pipe only into another sandbox.run() subprocess to keep both commands isolated.
    */
-  async run<const OptionsType extends RunOptions = Record<string, unknown>>(command: string, options?: OptionsType) {
+  async run<const OptionsType extends RunOptions = Record<string, never>>(command: string, options?: OptionsType): Promise<{process: ReturnType<typeof execa<OptionsType>>}>;
+  async run(command: string, options: RunOptions = {}): Promise<unknown> {
     const {scratchPath} = this;
     if (scratchPath === undefined) {
       throw new Error('Sandbox has not started.');
@@ -112,7 +114,7 @@ export class Sandbox {
       isWrapped = true;
       const subprocess = execa(executable, {
         ...options,
-        cwd: this.cwd,
+        cwd: options?.cwd ?? this.cwd,
         shell: true,
         extendEnv: false,
         env: {
@@ -138,6 +140,7 @@ export class Sandbox {
       };
 
       void subprocess.then(cleanup, cleanup);
+
       return {process: subprocess};
     } catch (error) {
       this.commandCount--;
