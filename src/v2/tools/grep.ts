@@ -121,16 +121,7 @@ export function createSandboxGrepTool(cwd: string, sandbox: Sandbox): ReturnType
     }
 
     if (result.exitCode !== 0 && result.exitCode !== 1) {
-      let error = result.stderr.trim().length > 0 ? result.stderr.trim() : `rg failed (${String(result.exitCode)})`;
-      if (/operation not permitted|<sandbox_violations>|connection blocked by network allowlist/iv.test(error)) {
-        error += `\n\n${[
-          'Sandbox restriction: work in the current project, use mktemp for private temporary files,',
-          'and treat global skills as read-only. Network access is limited by the configured allowlist.',
-          'Do not retry an outside path or seek a host-execution workaround.',
-        ].join(' ')}`;
-      }
-
-      throw new Error(error);
+      throw new Error(result.stderr.trim().length > 0 ? result.stderr.trim() : `rg failed (${String(result.exitCode)})`);
     }
 
     // Parse only the bounded, compact match records returned by `head`, not ripgrep's full event stream.
