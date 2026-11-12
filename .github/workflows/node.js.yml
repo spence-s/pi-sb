@@ -11,7 +11,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
 
     strategy:
       matrix:
@@ -19,6 +19,8 @@ jobs:
     name: Node ${{ matrix.node-version }}
     steps:
       - uses: actions/checkout@v7
+      - name: Install sandbox dependency
+        run: brew install ripgrep
       - name: Setup Node
         uses: actions/setup-node@v7
         with:
